@@ -105,10 +105,16 @@ jobs:
         echo "FOUND_DIRS=${CSV}" >> $GITHUB_ENV
         echo "FOUND_DIRS_JSON=${JSON_ARR}" >> $GITHUB_ENV
 
-    - name: Debug show computed dirs
-      run: |
-        echo "CSV: ${{ steps.compute-dirs.outputs.dirs_csv }}"
-        echo "JSON: ${{ steps.compute-dirs.outputs.dirs_json }}"
+        appName=$(echo $FOUND_DIRS | cut -d / -f 2)
+        envName=$(echo $FOUND_DIRS | cut -d / -f 3)
+
+        echo "appName=${appName}" >> $GITHUB_ENV
+        echo "envName=${envName}" >> $GITHUB_ENV
+
+        echo "FOUND_DIRS=${CSV}" >> $GITHUB_ENV
+        echo "appName=${appName}" 
+        echo "envName=${envName}"
+
 
 
 
