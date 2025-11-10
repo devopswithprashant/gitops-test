@@ -30,28 +30,172 @@ jobs:
     
     - name: Checkout
       uses: actions/checkout@v4
+      with:
+          fetch-depth: 10
     
-    - name: print file content of DEV
+    - name: Determine before/after SHAs
+      id: shas
       run: |
-        cd dev-blog
-        cat deploy.yaml
-        cat service.yaml
-
-    - name: print file content of QA
-      run: |
-        cd qa-blog
-        cat deploy.yaml
-        cat service.yaml
-
-    - name: print file content of STAGE
-      run: |
-        cd stage-blog
-        cat deploy.yaml
-        cat service.yaml
-
-    - name: print file content of PROD
-      run: |
-        cd prod-blog
-        cat deploy.yaml
-        cat service.yaml
+        echo "BEFORE=${{ github.event.before }}" >> $GITHUB_ENV
+        echo "AFTER=${{ github.sha }}" >> $GITHUB_ENV
+        #echo "before=${{ github.event.before }}" > shas.txt
+        #echo "after=${{ github.sha }}" >> shas.txt
+        #cat shas.txt
     
+    - name: List changed files between commits
+      id: changed-files
+      run: |
+        # If this is the first commit on branch, event.before may be 000...; handle gracefully
+        if [ "${BEFORE}" = "0000000000000000000000000000000000000000" ]; then
+          git diff --name-only ${AFTER} | tee changed.txt || true
+        else
+          git diff --name-only ${BEFORE} ${AFTER} | tee changed.txt || true
+        fi
+        echo "::set-output name=files::$(cat changed.txt | sed ':a;N;$!ba;s/\n/|/g')"
+    
+    - name: Compute changed overlay dirs
+      id: compute-dirs
+      run: |
+        # Adjust the AWK field numbers to match depth you want.
+        # Example assumes overlays are at apps/<team>/<app>/overlays/<env>/...
+        # We want the path up to overlays/<env> (e.g. apps/team-a/app-x/overlays/prod)
+        cat changed.txt || true
+        # Filter only files under apps/ (change this prefix to match your repo layout)
+        grep '^apps/' changed.txt || true > files_under_apps.txt
+        # Extract up-to overlay env directory (first 5 path segments)
+        awk -F'/' '{ if (NF >= 5) print $1"/"$2"/"$3"/"$4"/"$5; else print $0 }' files_under_apps.txt \
+          | sort -u > changed_dirs.txt
+        # If file empty, set empty output
+        DIR_LIST=$(cat changed_dirs.txt | sed ':a;N;$!ba;s/\n/,/g')
+        echo "dirs=$DIR_LIST"
+        echo "::set-output name=dirs::$DIR_LIST"
+
+    - name: Debug: show dirs
+      run: |
+        echo "Changed overlay dirs: ${{ steps.compute-dirs.outputs.dirs }}"
+        IFS=',' read -ra DIRS <<< "${{ steps.compute-dirs.outputs.dirs }}"
+        # Convert to JSON array string: ["dir1","dir2"]
+        arr_json=$(printf '%s\n' "${DIRS[@]}" | jq -R . | jq -s .)
+        echo "Dir: arr_json"
+
+
+
+    
+    # - name: print file content of DEV
+    #   run: |
+    #     cd dev-blog
+    #     cat deploy.yaml
+    #     cat service.yaml
+
+    # - name: print file content of QA
+    #   run: |
+    #     cd qa-blog
+    #     cat deploy.yaml
+    #     cat service.yaml
+
+    # - name: print file content of STAGE
+    #   run: |
+    #     cd stage-blog
+    #     cat deploy.yaml
+    #     cat service.yaml
+
+    # - name: print file content of PROD
+    #   run: |
+    #     cd prod-blog
+    #     cat deploy.yaml
+    #     cat service.yaml
+
+
+
+
+
+
+
+
+
+
+
+
+
+# name: GitOps-post-merge
+
+# on:
+#   push:
+#     branches: 
+#       - main   # or your GitOps target branch
+
+# jobs:
+#   detect-and-ssm:
+#     runs-on: ubuntu-latest
+#     permissions:
+#       contents: read
+#     steps:
+#       - name: Checkout full repo
+#         uses: actions/checkout@v4
+#         with:
+#           fetch-depth: 0
+
+#       - name: Determine before/after SHAs
+#         id: shas
+#         run: |
+#           echo "BEFORE=${{ github.event.before }}" >> $GITHUB_ENV
+#           echo "AFTER=${{ github.sha }}" >> $GITHUB_ENV
+#           echo "before=${{ github.event.before }}" > shas.txt
+#           echo "after=${{ github.sha }}" >> shas.txt
+#           cat shas.txt
+
+#       - name: List changed files between commits
+#         id: changed-files
+#         run: |
+#           # If this is the first commit on branch, event.before may be 000...; handle gracefully
+#           if [ "${BEFORE}" = "0000000000000000000000000000000000000000" ]; then
+#             git diff --name-only ${AFTER} | tee changed.txt || true
+#           else
+#             git diff --name-only ${BEFORE} ${AFTER} | tee changed.txt || true
+#           fi
+#           echo "::set-output name=files::$(cat changed.txt | sed ':a;N;$!ba;s/\n/|/g')"
+
+#       - name: Compute changed overlay dirs
+#         id: compute-dirs
+#         run: |
+#           # Adjust the AWK field numbers to match depth you want.
+#           # Example assumes overlays are at apps/<team>/<app>/overlays/<env>/...
+#           # We want the path up to overlays/<env> (e.g. apps/team-a/app-x/overlays/prod)
+#           cat changed.txt || true
+#           # Filter only files under apps/ (change this prefix to match your repo layout)
+#           grep '^apps/' changed.txt || true > files_under_apps.txt
+#           # Extract up-to overlay env directory (first 5 path segments)
+#           awk -F'/' '{ if (NF >= 5) print $1"/"$2"/"$3"/"$4"/"$5; else print $0 }' files_under_apps.txt \
+#             | sort -u > changed_dirs.txt
+#           # If file empty, set empty output
+#           DIR_LIST=$(cat changed_dirs.txt | sed ':a;N;$!ba;s/\n/,/g')
+#           echo "dirs=$DIR_LIST"
+#           echo "::set-output name=dirs::$DIR_LIST"
+
+#       - name: Debug: show dirs
+#         run: |
+#           echo "Changed overlay dirs: ${{ steps.compute-dirs.outputs.dirs }}"
+#           IFS=',' read -ra DIRS <<< "${{ steps.compute-dirs.outputs.dirs }}"
+#           # Convert to JSON array string: ["dir1","dir2"]
+#           arr_json=$(printf '%s\n' "${DIRS[@]}" | jq -R . | jq -s .)
+#           echo "Dir: arr_json"
+
+#       - name: Call AWS SSM send-command (for each dir)
+#         if: ${{ steps.compute-dirs.outputs.dirs != '' }}
+#         env:
+#           AWS_REGION: us-east-1
+#           SSM_DOCUMENT: my-update-k8s-config-doc
+#         run: |
+#           # Prepare JSON array for SSM parameter (SSM expects array or specific format depending on doc)
+#           IFS=',' read -ra DIRS <<< "${{ steps.compute-dirs.outputs.dirs }}"
+#           # Convert to JSON array string: ["dir1","dir2"]
+#           arr_json=$(printf '%s\n' "${DIRS[@]}" | jq -R . | jq -s .)
+#           echo "Sending SSM command for paths: $arr_json"
+#           aws ssm send-command \
+#             --region ${AWS_REGION} \
+#             --document-name "${SSM_DOCUMENT}" \
+#             --comment "GitOps post-merge update" \
+#             --parameters "paths=${arr_json}" \
+#             --targets "Key=tag:Name,Values=gitops-runner" \
+#             --timeout-seconds 600 \
+#             --output json
