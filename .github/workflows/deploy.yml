@@ -105,13 +105,13 @@ jobs:
         echo "FOUND_DIRS=${CSV}" >> $GITHUB_ENV
         echo "FOUND_DIRS_JSON=${JSON_ARR}" >> $GITHUB_ENV
 
-        appName=$(echo $dirs_csv | cut -d / -f 2)
-        envName=$(echo $dirs_csv | cut -d / -f 3)
+        appName=$(echo $CSV | cut -d / -f 2)
+        envName=$(echo $CSV | cut -d / -f 3)
 
         echo "appName=${appName}" >> $GITHUB_ENV
         echo "envName=${envName}" >> $GITHUB_ENV
 
-        echo "FOUND_DIRS=${dirs_csv}" >> $GITHUB_ENV
+        echo "FOUND_DIRS=${CSV}"
         echo "appName=${appName}" 
         echo "envName=${envName}"
 
