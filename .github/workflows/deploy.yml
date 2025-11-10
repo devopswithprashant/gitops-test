@@ -70,7 +70,7 @@ jobs:
         echo "dirs=$DIR_LIST"
         echo "::set-output name=dirs::$DIR_LIST"
 
-    - name: Debug: show dirs
+    - name: Debug show dirs
       run: |
         echo "Changed overlay dirs: ${{ steps.compute-dirs.outputs.dirs }}"
         IFS=',' read -ra DIRS <<< "${{ steps.compute-dirs.outputs.dirs }}"
