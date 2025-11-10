@@ -43,6 +43,7 @@ jobs:
         #cat shas.txt
     
     
+    
     - name: List changed files between commits (safe)
       id: list-changed
       run: |
@@ -67,85 +68,47 @@ jobs:
         CHANGED_RAW=$(sed -z 's/\n/|/g' changed.txt || true)
         echo "files=${CHANGED_RAW}" >> "$GITHUB_OUTPUT"
 
-    - name: Compute changed overlay dirs + app/env (store in env)
+    - name: Compute changed overlay dirs (apps/.../overlays/<env>)
       id: compute-dirs
       run: |
         set -euo pipefail
-
-        # ensure changed.txt exists
-        if [ ! -f changed.txt ]; then
-          echo "changed.txt missing, creating empty file"
-          : > changed.txt
-        fi
-
-        # Filter only relevant files under apps/ (no failure if none)
+        # create file even if grep finds nothing
         : > files_under_apps.txt
+
+        # Filter only relevant files under apps/ into files_under_apps.txt (no failure if none)
         grep -E '^apps/' changed.txt > files_under_apps.txt || true
 
-        # Remove filename (strip last path segment) and dedupe
+        # Debug
+        echo "Files under apps/:"
+        sed -n '1,200p' files_under_apps.txt || true
+
+        # If you want dirs up to apps/<team>/<app>/overlays/<env>,
+        # that's first 5 path segments: apps/team/app/overlays/env
+        # Adjust the awk field count if your layout is different.
         : > changed_dirs.txt
-        awk -F'/' 'NF>=2 { $NF=""; sub(/\/$/, "", $0); print } NF<2 { if (NF>0) print }' files_under_apps.txt \
+        awk -F'/' 'NF >= 5 { print $1"/"$2"/"$3"/"$4"/"$5 } NF < 5 { if (NF>0) print $0 }' files_under_apps.txt \
           | sort -u > changed_dirs.txt || true
 
-        # Prepare arrays
-        DIRS=()
-        APPS=()
-        ENVS=()
+        # produce comma-separated list and JSON array
+        if [ -s changed_dirs.txt ]; then
+          CSV=$(paste -sd, changed_dirs.txt)
+          # Create JSON array using jq (one item per line)
+          JSON_ARR=$(jq -R -s -c 'split("\n")[:-1]' changed_dirs.txt)
+        else
+          CSV=""
+          JSON_ARR="[]"
+        fi
 
-        while IFS= read -r line; do
-          # skip empty lines
-          [ -z "${line}" ] && continue
-          DIRS+=("$line")
+        echo "dirs_csv=${CSV}" >> "$GITHUB_OUTPUT"
+        echo "dirs_json=${JSON_ARR}" >> "$GITHUB_OUTPUT"
+        # also export for later steps (optional)
+        echo "FOUND_DIRS=${CSV}" >> $GITHUB_ENV
+        echo "FOUND_DIRS_JSON=${JSON_ARR}" >> $GITHUB_ENV
 
-          # split by '/'
-          IFS='/' read -ra parts <<< "$line"
-          # parts[0] == "apps"
-          len=${#parts[@]}
-
-          app=""
-          env=""
-
-          if [ "$len" -eq 3 ]; then
-            # apps/<app>/<env>
-            app="${parts[1]}"
-            env="${parts[2]}"
-          elif [ "$len" -ge 4 ]; then
-            # apps/<team>/<app>/<env>/...
-            # pick the third segment as app and fourth as env
-            app="${parts[2]}"
-            env="${parts[3]}"
-          else
-            # fallback: try to use last two segments if possible
-            if [ "$len" -ge 2 ]; then
-              app="${parts[$((len-2))]}"
-              env="${parts[$((len-1))]}"
-            fi
-          fi
-
-          APPS+=("$app")
-          ENVS+=("$env")
-        done < changed_dirs.txt
-
-        # Helper to join & dedupe while preserving readable order
-        join_and_dedupe() {
-          arr=("$@")
-          # print each on new line, sort -u, then join with comma
-          printf "%s\n" "${arr[@]}" | awk 'NF' | awk '!x[$0]++' | paste -sd, - || echo ""
-        }
-
-        FOUND_DIRS=$(join_and_dedupe "${DIRS[@]}")
-        FOUND_APPS=$(join_and_dedupe "${APPS[@]}")
-        FOUND_ENVS=$(join_and_dedupe "${ENVS[@]}")
-
-        # Export to GITHUB_ENV
-        echo "FOUND_DIRS=${FOUND_DIRS}" >> "$GITHUB_ENV"
-        echo "FOUND_APPS=${FOUND_APPS}" >> "$GITHUB_ENV"
-        echo "FOUND_ENVS=${FOUND_ENVS}" >> "$GITHUB_ENV"
-
-        # debug log (remove later if you want)
-        echo "FOUND_DIRS='${FOUND_DIRS}'"
-        echo "FOUND_APPS='${FOUND_APPS}'"
-        echo "FOUND_ENVS='${FOUND_ENVS}'"
+    - name: Debug show computed dirs
+      run: |
+        echo "CSV: ${{ steps.compute-dirs.outputs.dirs_csv }}"
+        echo "JSON: ${{ steps.compute-dirs.outputs.dirs_json }}"
 
 
 
