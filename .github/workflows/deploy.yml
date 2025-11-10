@@ -1,0 +1,57 @@
+name: 'Deploy'
+
+on:
+  push:
+  pull_request:
+
+
+permissions:
+  contents: read
+  id-token: write # <--- REQUIRED for OIDC
+
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+
+jobs:
+  Deploy-K8:
+    name: 'Deploy-K8'
+    runs-on: ubuntu-latest
+    environment: dev
+
+    # Use the Bash shell regardless whether the GitHub Actions runner is ubuntu-latest, macos-latest, or windows-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+    
+    - name: Checkout
+      uses: actions/checkout@v4
+    
+    - name: print file content of DEV
+      run: |
+        cd dev-blog
+        cat deploy.yaml
+        cat service.yaml
+
+    - name: print file content of QA
+      run: |
+        cd qa-blog
+        cat deploy.yaml
+        cat service.yaml
+
+    - name: print file content of STAGE
+      run: |
+        cd stage-blog
+        cat deploy.yaml
+        cat service.yaml
+
+    - name: print file content of PROD
+      run: |
+        cd prod-blog
+        cat deploy.yaml
+        cat service.yaml
+    
