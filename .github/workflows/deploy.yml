@@ -42,41 +42,74 @@ jobs:
         #echo "after=${{ github.sha }}" >> shas.txt
         #cat shas.txt
     
-    - name: List changed files between commits
-      id: changed-files
-      run: |
-        # If this is the first commit on branch, event.before may be 000...; handle gracefully
-        if [ "${BEFORE}" = "0000000000000000000000000000000000000000" ]; then
-          git diff --name-only ${AFTER} | tee changed.txt || true
-        else
-          git diff --name-only ${BEFORE} ${AFTER} | tee changed.txt || true
-        fi
-        echo "::set-output name=files::$(cat changed.txt | sed ':a;N;$!ba;s/\n/|/g')"
     
-    - name: Compute changed overlay dirs
+    - name: List changed files between commits (safe)
+      id: list-changed
+      run: |
+        set -euo pipefail
+        BEFORE="${BEFORE}"
+        AFTER="${AFTER}"
+
+        # Ensure changed.txt exists (empty if none)
+        : > changed.txt
+
+        if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+          # branch created or first commit — list files in the AFTER commit
+          git diff --name-only "${AFTER}" > changed.txt || true
+        else
+          git diff --name-only "${BEFORE}" "${AFTER}" > changed.txt || true
+        fi
+
+        echo "Changed files (raw):"
+        sed -n '1,200p' changed.txt || true
+
+        # write to step output using GITHUB_OUTPUT
+        CHANGED_RAW=$(sed -z 's/\n/|/g' changed.txt || true)
+        echo "files=${CHANGED_RAW}" >> "$GITHUB_OUTPUT"
+
+    - name: Compute changed overlay dirs (apps/.../overlays/<env>)
       id: compute-dirs
       run: |
-        # Adjust the AWK field numbers to match depth you want.
-        # Example assumes overlays are at apps/<team>/<app>/overlays/<env>/...
-        # We want the path up to overlays/<env> (e.g. apps/team-a/app-x/overlays/prod)
-        cat changed.txt || true
-        # Filter only files under apps/ (change this prefix to match your repo layout)
-        grep '^apps/' changed.txt || true > files_under_apps.txt
-        # Extract up-to overlay env directory (first 5 path segments)
-        awk -F'/' '{ if (NF >= 5) print $1"/"$2"/"$3"/"$4"/"$5; else print $0 }' files_under_apps.txt \
-          | sort -u > changed_dirs.txt
-        # If file empty, set empty output
-        DIR_LIST=$(cat changed_dirs.txt | sed ':a;N;$!ba;s/\n/,/g')
-        echo "dirs=$DIR_LIST"
-        echo "::set-output name=dirs::$DIR_LIST"
+        set -euo pipefail
+        # create file even if grep finds nothing
+        : > files_under_apps.txt
 
-    - name: Debug show dirs
+        # Filter only relevant files under apps/ into files_under_apps.txt (no failure if none)
+        grep -E '^apps/' changed.txt > files_under_apps.txt || true
+
+        # Debug
+        echo "Files under apps/:"
+        sed -n '1,200p' files_under_apps.txt || true
+
+        # If you want dirs up to apps/<team>/<app>/overlays/<env>,
+        # that's first 5 path segments: apps/team/app/overlays/env
+        # Adjust the awk field count if your layout is different.
+        : > changed_dirs.txt
+        awk -F'/' 'NF >= 5 { print $1"/"$2"/"$3"/"$4"/"$5 } NF < 5 { if (NF>0) print $0 }' files_under_apps.txt \
+          | sort -u > changed_dirs.txt || true
+
+        # produce comma-separated list and JSON array
+        if [ -s changed_dirs.txt ]; then
+          CSV=$(paste -sd, changed_dirs.txt)
+          # Create JSON array using jq (one item per line)
+          JSON_ARR=$(jq -R -s -c 'split("\n")[:-1]' changed_dirs.txt)
+        else
+          CSV=""
+          JSON_ARR="[]"
+        fi
+
+        echo "dirs_csv=${CSV}" >> "$GITHUB_OUTPUT"
+        echo "dirs_json=${JSON_ARR}" >> "$GITHUB_OUTPUT"
+        # also export for later steps (optional)
+        echo "FOUND_DIRS=${CSV}" >> $GITHUB_ENV
+        echo "FOUND_DIRS_JSON=${JSON_ARR}" >> $GITHUB_ENV
+
+    - name: Debug show computed dirs
       run: |
-        echo "Changed overlay dirs: ${{ steps.compute-dirs.outputs.dirs }}"
-        IFS=',' read -ra DIRS <<< "${{ steps.compute-dirs.outputs.dirs }}"
-        # Convert to JSON array string: ["dir1","dir2"]
-        arr_json=$(printf '%s\n' "${DIRS[@]}" | jq -R . | jq -s .)
-        echo "Dir: arr_json"
+        echo "CSV: ${{ steps.compute-dirs.outputs.dirs_csv }}"
+        echo "JSON: ${{ steps.compute-dirs.outputs.dirs_json }}"
+
+
 
 
 
