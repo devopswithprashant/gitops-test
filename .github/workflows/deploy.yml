@@ -33,28 +33,24 @@ jobs:
       with:
           fetch-depth: 10
     
-    - name: Determine before/after SHAs
-      id: shas
-      run: |
-        echo "BEFORE=${{ github.event.before }}" >> $GITHUB_ENV
-        echo "AFTER=${{ github.sha }}" >> $GITHUB_ENV
-        #echo "before=${{ github.event.before }}" > shas.txt
-        #echo "after=${{ github.sha }}" >> shas.txt
-        #cat shas.txt
     
     
-    
-    - name: List changed files between commits (safe)
-      id: list-changed
+    - name: Determine the change env by before/after SHAs (multi-dir safe)
+      id: find_change_env
       run: |
         set -euo pipefail
-        BEFORE="${BEFORE}"
-        AFTER="${AFTER}"
+
+        # Git-provided SHAs (substituted by Actions at runtime)
+        BEFORE=${{ github.event.before }}
+        AFTER=${{ github.sha }}
+
+        echo "BEFORE=${BEFORE}"
+        echo "AFTER=${AFTER}"
 
         # Ensure changed.txt exists (empty if none)
         : > changed.txt
 
-        if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+        if [ "${BEFORE}" = "0000000000000000000000000000000000000000" ]; then
           # branch created or first commit — list files in the AFTER commit
           git diff --name-only "${AFTER}" > changed.txt || true
         else
@@ -64,95 +60,169 @@ jobs:
         echo "Changed files (raw):"
         sed -n '1,200p' changed.txt || true
 
-        # write to step output using GITHUB_OUTPUT
-        CHANGED_RAW=$(sed -z 's/\n/|/g' changed.txt || true)
-        echo "files=${CHANGED_RAW}" >> "$GITHUB_OUTPUT"
-
-    - name: Compute changed overlay dirs (apps/.../overlays/<env>)
-      id: compute-dirs
-      run: |
-        set -euo pipefail
-        # create file even if grep finds nothing
-        : > files_under_apps.txt
-
-        # Filter only relevant files under apps/ into files_under_apps.txt (no failure if none)
-        grep -E '^apps/' changed.txt > files_under_apps.txt || true
-
-        # Debug
-        echo "Files under apps/:"
-        sed -n '1,200p' files_under_apps.txt || true
-
-        # If you want dirs up to apps/<team>/<app>/overlays/<env>,
-        # that's first 5 path segments: apps/team/app/overlays/env
-        # Adjust the awk field count if your layout is different.
-        : > changed_dirs.txt
-        awk -F'/' 'NF >= 5 { print $1"/"$2"/"$3"/"$4"/"$5 } NF < 5 { if (NF>0) print $0 }' files_under_apps.txt \
-          | sort -u > changed_dirs.txt || true
-
-        # produce comma-separated list and JSON array
-        if [ -s changed_dirs.txt ]; then
-          CSV=$(paste -sd, changed_dirs.txt)
-          # Create JSON array using jq (one item per line)
-          JSON_ARR=$(jq -R -s -c 'split("\n")[:-1]' changed_dirs.txt)
+        # Also expose raw file list as a step output (pipe-separated like previously)
+        # Use a safe replace of newlines with '|' (no jq)
+        if [ -s changed.txt ]; then
+          CHANGED_RAW=$(paste -sd'|' changed.txt)
         else
-          CSV=""
-          JSON_ARR="[]"
+          CHANGED_RAW=""
+        fi
+        echo "files=${CHANGED_RAW}" >> "${GITHUB_OUTPUT}"
+
+        # ----------------------------
+        # Build ordered, deduped list of relevant directories (apps/...)
+        # ----------------------------
+        declare -a DIRS=()
+        declare -a APPS=()
+        declare -a ENVS=()
+
+        # iterate in file order to preserve order
+        while IFS= read -r file_path || [ -n "$file_path" ]; do
+          [ -z "$file_path" ] && continue
+
+          # only consider files under apps/
+          case "$file_path" in
+            apps/*) ;;
+            *) continue ;;
+          esac
+
+          # normalize (remove trailing slash)
+          file_path="${file_path%/}"
+
+          # strip filename: everything before last '/'
+          if [[ "$file_path" == */* ]]; then
+            dir="${file_path%/*}"
+          else
+            dir="$file_path"
+          fi
+          dir="${dir%/}"
+
+          # dedupe preserve order
+          skip=0
+          for existing in "${DIRS[@]}"; do
+            if [ "$existing" = "$dir" ]; then
+              skip=1
+              break
+            fi
+          done
+          [ $skip -eq 1 ] && continue
+
+          # add to DIRS
+          DIRS+=("$dir")
+
+          # split path into parts
+          IFS='/' read -ra parts <<< "$dir"
+          plen=${#parts[@]}
+
+          app=""
+          env=""
+
+          # support both layouts:
+          # - apps/<app>/<env>
+          # - apps/<team>/<app>/<env>/...
+          if [ "$plen" -ge 4 ]; then
+            # apps / team / app / env / ...
+            app="${parts[2]}"
+            env="${parts[3]}"
+          elif [ "$plen" -eq 3 ]; then
+            # apps / app / env
+            app="${parts[1]}"
+            env="${parts[2]}"
+          else
+            # fallback: try last two parts
+            if [ "$plen" -ge 2 ]; then
+              app="${parts[$((plen-2))]}"
+              env="${parts[$((plen-1))]}"
+            fi
+          fi
+
+          APPS+=("$app")
+          ENVS+=("$env")
+        done < changed.txt
+
+        # join helper (comma separated)
+        join_by_comma() {
+          local IFS=','
+          echo "$*"
+        }
+
+        if [ ${#DIRS[@]} -eq 0 ]; then
+          FOUND_DIRS=""
+          FOUND_APPS=""
+          FOUND_ENVS=""
+        else
+          FOUND_DIRS=$(join_by_comma "${DIRS[@]}")
+          FOUND_APPS=$(join_by_comma "${APPS[@]}")
+          FOUND_ENVS=$(join_by_comma "${ENVS[@]}")
         fi
 
-        echo "dirs_csv=${CSV}" >> "$GITHUB_OUTPUT"
-        echo "dirs_json=${JSON_ARR}" >> "$GITHUB_OUTPUT"
-        # also export for later steps (optional)
-        echo "FOUND_DIRS=${CSV}" >> $GITHUB_ENV
-        echo "FOUND_DIRS_JSON=${JSON_ARR}" >> $GITHUB_ENV
+        # Export to env for subsequent steps
+        echo "FOUND_DIRS=${FOUND_DIRS}" >> "$GITHUB_ENV"
+        echo "FOUND_APPS=${FOUND_APPS}" >> "$GITHUB_ENV"
+        echo "FOUND_ENVS=${FOUND_ENVS}" >> "$GITHUB_ENV"
 
-        appName=$(echo $CSV | cut -d / -f 2)
-        envName=$(echo $CSV | cut -d / -f 3)
+        # Also set dirs_csv as a step output for compatibility
+        echo "dirs_csv=${FOUND_DIRS}" >> "${GITHUB_OUTPUT}"
 
-        echo "appName=${appName}" >> $GITHUB_ENV
-        echo "envName=${envName}" >> $GITHUB_ENV
+        # ----------------------------
+        # Validation: all apps must be 'blog' (as in your original check)
+        # and each env must be one of dev|qa|stage|prod
+        # ----------------------------
+        # If no dirs found, we don't fail — just set outputs and exit 0.
+        if [ -z "${FOUND_DIRS}" ]; then
+          echo "No changed apps/* paths found — nothing to validate."
+          echo "PRODlower=false" >> "${GITHUB_OUTPUT}"
+          exit 0
+        fi
 
-        echo "FOUND_DIRS=${CSV}"
-        echo "appName=${appName}" 
-        echo "envName=${envName}"
+        # Validate apps and envs per-index
+        IFS=',' read -ra APPS_ARR <<< "$FOUND_APPS"
+        IFS=',' read -ra ENVS_ARR <<< "$FOUND_ENVS"
 
+        # allowed envs
+        valid_envs_regex='^(dev|qa|stage|prod)$'
+        prod_detected=false
 
+        for i in "${!APPS_ARR[@]}"; do
+          a="${APPS_ARR[$i]}"
+          e="${ENVS_ARR[$i]}"
 
+          # app validation
+          if [ -z "$a" ]; then
+            echo "Invalid app detected (empty) for dir: ${DIRS[$i]}"
+            exit 1
+          fi
+          if [ "$a" != "blog" ]; then
+            echo "Not able to find the change in correct app, invalid appName: $a"
+            echo "exiting..."
+            exit 1
+          fi
 
+          # env validation
+          if ! [[ "$e" =~ $valid_envs_regex ]]; then
+            echo "Not able to find the change in correct env, invalid envName: $e"
+            echo "exiting..."
+            exit 1
+          fi
 
-    
-    # - name: print file content of DEV
-    #   run: |
-    #     cd dev-blog
-    #     cat deploy.yaml
-    #     cat service.yaml
+          if [ "$e" = "prod" ]; then
+            prod_detected=true
+          fi
+        done
 
-    # - name: print file content of QA
-    #   run: |
-    #     cd qa-blog
-    #     cat deploy.yaml
-    #     cat service.yaml
+        # Set PRODlower: true if any prod detected and branch is not main
+        BRANCH_NAME='${{ github.ref_name }}'
+        if [ "$prod_detected" = true ] && [ "$BRANCH_NAME" != "main" ]; then
+          echo "PRODlower=true" >> "${GITHUB_OUTPUT}"
+        else
+          echo "PRODlower=false" >> "${GITHUB_OUTPUT}"
+        fi
 
-    # - name: print file content of STAGE
-    #   run: |
-    #     cd stage-blog
-    #     cat deploy.yaml
-    #     cat service.yaml
-
-    # - name: print file content of PROD
-    #   run: |
-    #     cd prod-blog
-    #     cat deploy.yaml
-    #     cat service.yaml
-
-
-
-
-
-
-
-
-
-
+        # debug logs
+        echo "FOUND_DIRS='${FOUND_DIRS}'"
+        echo "FOUND_APPS='${FOUND_APPS}'"
+        echo "FOUND_ENVS='${FOUND_ENVS}'"
+        echo "PRODlower=$(cat ${GITHUB_OUTPUT} | sed -n 's/^PRODlower=//p' || true )"
 
 
 
